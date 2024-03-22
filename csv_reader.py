@@ -93,5 +93,5 @@ def main(
             logger.info('All files was handled')
         else:
             logger.info(f'No files was found in "{from_csvs}" folder')
-        logger.info('Sleep for 24 hours')
-        time.sleep(3600 * 24)
+        logger.info('Sleep for 1 hours')
+        time.sleep(3600)
