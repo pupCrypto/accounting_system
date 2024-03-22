@@ -5,8 +5,8 @@ import json
 import datetime
 from typing import TypeVar
 from dataclasses import dataclass
-from google_spreadsheets.google_spreadsheets.api import GoogleSheets, Cell
-from google_spreadsheets.google_spreadsheets.Dataclasses import Borders, RightBorder
+from google_spreadsheets.api import GoogleSheets, Cell
+from google_spreadsheets.Dataclasses import Borders, RightBorder
 
 
 ColIdx = TypeVar('ColIdx', bound=int)
