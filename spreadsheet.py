@@ -553,7 +553,7 @@ class AccountingSpreadsheet:
             shipment_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in shipment_cols if col_idx is not None) # noqa
             income_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in income_cols if col_idx is not None) # noqa
             sale_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_cols if col_idx is not None) # noqa
-            sale_sum_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_cols if col_idx is not None) # noqa
+            sale_sum_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_sum_cols if col_idx is not None) # noqa
 
             shipment_cell = Cell(value=shipment_formula, col_idx=from_cell.col_idx, row_idx=p.row_idx) # noqa
             income_cell = Cell(value=income_formula, col_idx=from_cell.col_idx + 1, row_idx=p.row_idx)
