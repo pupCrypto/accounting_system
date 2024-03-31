@@ -136,7 +136,7 @@ class AccountingSpreadsheet:
     """
     Class implements methods to manipulate accounting google spreadsheet
     """
-    def __init__(self, spreadsheet_id: str, gid: int, creds_path: str, summarize_forward: bool = True) -> None:
+    def __init__(self, spreadsheet_id: str, gid: int, creds_path: str, logger=None, summarize_forward: bool = True) -> None:
         with open(creds_path, encoding='utf8') as file:
             credentials_str = file.read()
         credentials = json.loads(credentials_str)
@@ -145,6 +145,7 @@ class AccountingSpreadsheet:
         self._dates: list[SheetDate] | None = None
         self._products: list[SheetProduct] | None = None
         self._months: list[SheetMonth] | None = None
+        self._logger = logger
         self._summarize_forward = summarize_forward
 
         # call post init method
@@ -644,28 +645,32 @@ class AccountingSpreadsheet:
                     case 'Утилизация':
                         target_idx = util_col_idx
                 if target_idx is None:
-                    raise ValueError(f'No such column "{sale.customer}"')
-                cols = other_cells[row_idx]
-                old_value = 0
-                for c in cols:
-                    if c.col_idx == target_idx:
-                        value = c.formatted_value or c.value
-                        if value is None:
-                            old_value = 0
-                        elif isinstance(value, str) and value.isdigit():
-                            old_value = int(value)
-                        elif isinstance(value, str):
-                            value = value.replace(',', '.') if ',' in value else value
-                            old_value = float(value)
-                        else:
-                            old_value = value
-                        break
-                new_value = old_value + sale.weight
-                if isinstance(new_value, float):
-                    new_value = round(new_value, 3)
-                new_cell = Cell(value=new_value, row_idx=row_idx, col_idx=target_idx)
-                new_sales.append(new_cell)
-                continue
+                    if self._logger is not None:
+                        self._logger.warning(f'No such column "{sale.customer}"')
+                    else:
+                        print(f'No such column "{sale.customer}"')
+                else:
+                    cols = other_cells[row_idx]
+                    old_value = 0
+                    for c in cols:
+                        if c.col_idx == target_idx:
+                            value = c.formatted_value or c.value
+                            if value is None:
+                                old_value = 0
+                            elif isinstance(value, str) and value.isdigit():
+                                old_value = int(value)
+                            elif isinstance(value, str):
+                                value = value.replace(',', '.') if ',' in value else value
+                                old_value = float(value)
+                            else:
+                                old_value = value
+                            break
+                    new_value = old_value + sale.weight
+                    if isinstance(new_value, float):
+                        new_value = round(new_value, 3)
+                    new_cell = Cell(value=new_value, row_idx=row_idx, col_idx=target_idx)
+                    new_sales.append(new_cell)
+                    continue
             try:
                 old_sale: Cell = old_sales[row_idx]
                 note = old_sale.note

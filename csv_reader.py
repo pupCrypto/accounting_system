@@ -58,7 +58,7 @@ def main(
             for f in files
         ]
         files_with_date.sort(key=lambda file_with_date: file_with_date['date'])
-        g = AccountingSpreadsheet(spreadsheet_id, gid, creds_path)
+        g = AccountingSpreadsheet(spreadsheet_id, gid, creds_path, logger)
         for f in files_with_date:
             file_name = f['file_name']
 
