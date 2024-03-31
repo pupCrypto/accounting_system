@@ -3,7 +3,7 @@ from pprint import pprint
 import time
 import json
 import datetime
-from typing import TypeVar
+from typing import TypeVar, Literal, Any
 from dataclasses import dataclass
 from google_spreadsheets.api import GoogleSheets, Cell
 from google_spreadsheets.Dataclasses import Borders, RightBorder
@@ -27,11 +27,9 @@ SEASONS = (
     'Декабрь',
 )
 
+
 @dataclass
 class SheetProduct:
-    """
-    Product
-    """
     plu: int
     name: str
     price: int
@@ -39,14 +37,53 @@ class SheetProduct:
 
 
 @dataclass
-class SheetDate:
-    """
-    Date
-    """
+class UnderDateColumn:
+    col_idx: ColIdx
+    row_idx: RowIdx
+    name: str
+
+
+class SheetBase:
+    def add_col_idx(self, num: int):
+        self.col_idx += num
+        if self.cols is not None:
+            for under_date_col in self.cols:
+                under_date_col.col_idx += num
+
+    def find_col_idx(self, name: str) -> ColIdx | None:
+        if self.cols is None:
+            raise TypeError('cols attr is None')
+        for col in self.cols:
+            if col.name == name:
+                return col.col_idx
+        return None
+
+    def to_cell(self, value: Any = None) -> Cell:
+        return Cell(value=value, col_idx=self.col_idx, row_idx=self.row_idx)
+
+
+@dataclass
+class SheetDate(SheetBase):
+    """Date"""
     date: datetime.date
     col_idx: RowIdx
     row_idx: ColIdx
     wide: int = 1
+    cols: list[UnderDateColumn] | None = None
+
+
+@dataclass
+class SheetMonth(SheetBase):
+    """Month"""
+    name: str
+    col_idx: ColIdx
+    row_idx: RowIdx
+    month: int = -1
+    wide: int = 1
+    cols: list[UnderDateColumn] | None = None
+
+    def __post_init__(self):
+        self.month = SEASONS.index(self.name) + 1
 
 
 @dataclass
@@ -99,7 +136,7 @@ class AccountingSpreadsheet:
     """
     Class implements methods to manipulate accounting google spreadsheet
     """
-    def __init__(self, spreadsheet_id: str, gid: int, creds_path: str) -> None:
+    def __init__(self, spreadsheet_id: str, gid: int, creds_path: str, summarize_forward: bool = True) -> None:
         with open(creds_path, encoding='utf8') as file:
             credentials_str = file.read()
         credentials = json.loads(credentials_str)
@@ -107,6 +144,15 @@ class AccountingSpreadsheet:
         self.gid = gid
         self._dates: list[SheetDate] | None = None
         self._products: list[SheetProduct] | None = None
+        self._months: list[SheetMonth] | None = None
+        self._summarize_forward = summarize_forward
+
+        # call post init method
+        self._post_init()
+
+    def _post_init(self):
+        if self._summarize_forward is True:
+            self.summarize_month('last_date', update_exist=False)
 
     def _binary_dates_srch(self, target: datetime.date) -> int | None:
         """
@@ -120,7 +166,7 @@ class AccountingSpreadsheet:
                 return i
         return None
 
-    def _insert_date(self, target: datetime.date) -> int:
+    def _insert_date(self, target: datetime.date) -> int | None:
         """
         Inserts date if self.dates does not contain it
         """
@@ -135,29 +181,27 @@ class AccountingSpreadsheet:
 
         high = index
         prev_idx = index - 1
+        prev_sheet_date = self.dates[prev_idx]
+        month_idx = [m.month for m in self.months].index(prev_sheet_date.date.month)
+        month = self.months[month_idx]
+        sheet_month: SheetMonth | None = None
+        add = 0 if prev_sheet_date.date.month == target.month else month.wide
         row_count, _ = self._google.get_size_of_sheet(self.gid)
         range_cells = (  # from to shift
-            Cell(col_idx=self.dates[prev_idx].col_idx + self.dates[prev_idx].wide, row_idx=self.dates[prev_idx].row_idx), # noqa
-            Cell(col_idx=self.dates[prev_idx].col_idx + self.dates[prev_idx].wide + 4, row_idx=self.dates[prev_idx].row_idx + row_count), # noqa
+            Cell(col_idx=prev_sheet_date.col_idx + prev_sheet_date.wide + add, row_idx=prev_sheet_date.row_idx), # noqa
+            Cell(col_idx=prev_sheet_date.col_idx + prev_sheet_date.wide + add + 8, row_idx=prev_sheet_date.row_idx + row_count), # noqa
         )
-        try:
-            self._google.insert_range(
+        insert_range = lambda: self._google.insert_range( # noqa
                 from_cell=range_cells[0],
                 to_cell=range_cells[1],
                 shift_dimension='COLUMNS',
                 sheet_id=self.gid
             )
-        except Exception:
-            self._google.append_dimension('COLUMNS', self.gid, 5)
-            self._google.insert_range(
-                from_cell=range_cells[0],
-                to_cell=range_cells[1],
-                shift_dimension='COLUMNS',
-                sheet_id=self.gid
-            )
+        self._google.append_dimension('COLUMNS', self.gid, 9)
+        insert_range()
         from_cell, to_cell = (
-            Cell(col_idx=self.dates[prev_idx].col_idx + self.dates[prev_idx].wide, row_idx=self.dates[prev_idx].row_idx), # noqa
-            Cell(col_idx=self.dates[prev_idx].col_idx + self.dates[prev_idx].wide + 4, row_idx=self.dates[prev_idx].row_idx), # noqa
+            Cell(col_idx=prev_sheet_date.col_idx + prev_sheet_date.wide + add, row_idx=prev_sheet_date.row_idx), # noqa
+            Cell(col_idx=prev_sheet_date.col_idx + prev_sheet_date.wide + 8 + add, row_idx=prev_sheet_date.row_idx), # noqa
         )
         date_cell = Cell(
             value=target.strftime('%d.%m.%Y'),
@@ -171,32 +215,58 @@ class AccountingSpreadsheet:
             Cell(value='Отгрузка', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
             Cell(value='Приход', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
             Cell(value='Реализация', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
-            Cell(value='Реализация сумма', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1), # noqa
+            Cell(value='Реализация сумма', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
+            Cell(value='Гл. Дом', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
+            Cell(value='Кинологи', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
+            Cell(value='Благотворительность', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
+            Cell(value='Утилизация', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
             Cell(value='Остаток', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
         )
         self._google.update_cells(nes_columns, sheet_id=self.gid)
-        self.dates.insert(high, SheetDate(date=target, col_idx=from_cell.col_idx, row_idx=0, wide=5)) # noqa
+        sheet_date = SheetDate(
+            date=target,
+            col_idx=from_cell.col_idx,
+            row_idx=0,
+            wide=9,
+            cols=[
+                UnderDateColumn(name='Отгрузка', col_idx=from_cell.col_idx, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Приход', col_idx=from_cell.col_idx + 1, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Реализация', col_idx=from_cell.col_idx + 2, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Реализация сумма', col_idx=from_cell.col_idx + 3, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Гл. Дом', col_idx=from_cell.col_idx + 4, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Кинологи', col_idx=from_cell.col_idx + 5, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Благотворительность', col_idx=from_cell.col_idx + 6, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Утилизация', col_idx=from_cell.col_idx + 7, row_idx=from_cell.row_idx + 1),
+                UnderDateColumn(name='Остаток', col_idx=from_cell.col_idx + 8, row_idx=from_cell.row_idx + 1),
+            ]
+        )
+        self.dates.insert(high, sheet_date)
         for i in range(high + 1, len(self.dates)):
-            self.dates[i].col_idx += 5
+            self.dates[i].add_col_idx(9)
+        for sm in self.months:
+            if target.month <= sm.month:
+                sm.add_col_idx(9)
         return high
 
-    def _find_cols_indexes(self, *col_names: str, target: datetime.date | SheetDate) -> tuple[ColIdx]:
+    def _find_cols_indexes(self, *col_names: str, target: datetime.date | SheetDate) -> tuple[ColIdx | None, ...]:
         if isinstance(target, datetime.date):
             index = self._binary_dates_srch(target)
             if index is None:
                 raise ValueError('No such date')
             target = self.dates[index]
 
-        from_cell = Cell(col_idx=target.col_idx, row_idx=target.row_idx + 1)
-        to_cell = Cell(col_idx=target.col_idx + target.wide - 1, row_idx=target.row_idx + 1)
-        cells_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
-        cols = {c.formatted_value or c.value: c.col_idx for c in cells_gen}
-        col_indexes = list(None for _ in col_names)
-        for i, col_name in enumerate(col_names):
-            col_idx = cols.get(col_name)
-            if col_idx is None:
-                continue
-            col_indexes[i] = col_idx
+        if target.cols is None:
+            from_cell = Cell(col_idx=target.col_idx, row_idx=target.row_idx + 1)
+            to_cell = Cell(col_idx=target.col_idx + target.wide - 1, row_idx=target.row_idx + 1)
+            cells_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
+            cols = {c.formatted_value or c.value: c.col_idx for c in cells_gen}
+            cols_under_date: list[UnderDateColumn] = []
+            for col_name, col_idx in cols.items():
+                under_date_col = UnderDateColumn(col_idx, 1, col_name)
+                cols_under_date.append(under_date_col)
+            target.cols = cols_under_date
+
+        col_indexes = list(target.find_col_idx(col_name) for col_name in col_names)
         return tuple(col_indexes)
 
     def append_col(self, target: datetime.date, col_name: str) -> ColIdx:
@@ -206,7 +276,7 @@ class AccountingSpreadsheet:
         sheet_date = self.dates[index]
         col_idx = self._find_cols_indexes(col_name, target=sheet_date)[0]
         if col_idx is not None:
-            return
+            return col_idx
         _, row_count = self._google.get_size_of_sheet(self.gid)
         self._google.append_dimension('COLUMNS', self.gid, 1)
         range_cells = (
@@ -220,7 +290,14 @@ class AccountingSpreadsheet:
         ]
         self._google.update_cells(new_cells, self.gid)
         for i in range(index + 1, len(self.dates)):
-            self.dates[i].col_idx += 1
+            self.dates[i].add_col_idx(1)
+
+        for sm in self.months:
+            if sm.month == sheet_date.date.month:
+                sm.add_col_idx(1)
+        sheet_date.cols.append(
+            UnderDateColumn(name=col_name, col_idx=sheet_date.cols[-1].col_idx + 1, row_idx=1)
+        )
         return sheet_date.col_idx + sheet_date.wide - 1
 
     def update_date(self, target: datetime.date | SheetDate) -> None:
@@ -230,19 +307,45 @@ class AccountingSpreadsheet:
         index = self._binary_dates_srch(target)
         if index is None:
             raise ValueError(f'No such date in spreadsheet {target}')
-        income_col_idx, sale_col_idx, rem_col_idx = self._find_cols_indexes('Приход', 'Реализация', 'Остаток', target=target) # noqa
-        prev_rem_col_idx, prev_invent_col_idx = self._find_cols_indexes('Остаток', 'Инвентаризация', target=self.dates[index-1]) # noqa
+        (
+            income_col_idx,
+            sale_col_idx,
+            main_dom_idx,
+            kino_idx,
+            blago_idx,
+            util_idx,
+            rem_col_idx
+         ) = self._find_cols_indexes( # noqa
+            'Приход',
+            'Реализация',
+            'Гл. Дом',
+            'Кинологи',
+            'Благотворительность',
+            'Утилизация',
+            'Остаток',
+            target=target
+        )
+        (
+            prev_rem_col_idx,
+            prev_invent_col_idx
+        ) = self._find_cols_indexes( # noqa
+            'Остаток',
+            'Инвентаризация',
+            target=self.dates[index-1]
+        ) # noqa
 
         new_cells: list[Cell] = []
+        minus_cols = (sale_col_idx, main_dom_idx, kino_idx, blago_idx, util_idx)
         for p in self.products:
             val = '='
             if income_col_idx is not None:
                 c = Cell(col_idx=income_col_idx, row_idx=p.row_idx)
                 val += f'+{c.name}'
 
-            if sale_col_idx is not None:
-                c = Cell(col_idx=sale_col_idx, row_idx=p.row_idx)
+            for minus_col_idx in minus_cols:
+                c = Cell(col_idx=minus_col_idx, row_idx=p.row_idx)
                 val += f'-{c.name}'
+
             if prev_rem_col_idx is not None or prev_invent_col_idx is not None:
                 if prev_invent_col_idx is not None and prev_rem_col_idx is not None:
                     invent_cell = Cell(col_idx=prev_invent_col_idx, row_idx=p.row_idx)
@@ -285,12 +388,80 @@ class AccountingSpreadsheet:
                         data['name'] = c.formatted_value or c.value
                     case 2:  # price column
                         price = c.formatted_value or c.value
-                        data['price'] = int(price)
+                        data['price'] = int(price) if price is not None else 0
             else:
                 products.append(SheetProduct(**data, row_idx=row_idx))
 
             self._products = products
         return self._products
+
+    def _find_dates_with_months(self) -> tuple[list[SheetDate], list[SheetMonth]]:
+        """
+        Gets lists of SheetDate's and SheetMonth's
+        """
+        dates_cells_gen = self._google.get_values(sheet_id=self.gid, from_='E1', to='ZZZ1')
+        dates: list[SheetDate] = []
+        months: list[SheetMonth] = []
+        wide = 1
+        flag = False
+        last_encountered_type: Literal['date', 'month'] = 'date'
+        for c in list(dates_cells_gen):
+            if c.value is None and c.formatted_value is None:
+                if flag:
+                    wide += 1
+                continue
+            cell_date = c.formatted_value or c.value
+            try:
+                date = datetime.datetime.strptime(cell_date, '%d.%m.%Y').date()
+                sheet_date = SheetDate(date, c.col_idx, c.row_idx)
+                if last_encountered_type == 'date' and len(dates) > 0:  # set previous date wide
+                    dates[-1].wide = wide
+                elif last_encountered_type == 'month' and len(dates) > 0:  # set last month wide
+                    months[-1].wide = wide
+                dates.append(sheet_date)
+                flag = True
+                wide = 1
+                last_encountered_type = 'date'
+            except ValueError:
+                if cell_date in SEASONS:
+                    sheet_month = SheetMonth(cell_date, c.col_idx, c.row_idx)
+                    if last_encountered_type == 'date' and len(dates) > 0:  # set previous date wide
+                        dates[-1].wide = wide
+                    elif last_encountered_type == 'month' and len(dates) > 0:  # set last month wide
+                        months[-1].wide = wide
+                    months.append(sheet_month)
+                    flag = True
+                    wide = 1
+                    last_encountered_type = 'month'
+                else:
+                    flag = False  # switch flag to false to forbid increasing wide
+
+        # calculating last elem wide
+        collection = dates if last_encountered_type == 'date' else months
+        from_cell = Cell(col_idx=collection[-1].col_idx, row_idx=1)
+        to_cell = Cell(col_idx=collection[-1].col_idx + wide, row_idx=1)
+        cols_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
+        wide = 1
+        for c in cols_gen:
+            if c.col_idx == collection[-1].col_idx:
+                continue
+            val = c.formatted_value or c.value
+            if val is None:
+                break
+            wide += 1
+        collection[-1].wide = wide
+        return dates, months
+
+    @property
+    def months(self) -> list[SheetMonth]:
+        """
+        Gets list of SheetMonth's
+        """
+        if self._months is None:
+            dates, months = self._find_dates_with_months()
+            self._dates = dates
+            self._months = months
+        return self._months
 
     @property
     def dates(self) -> list[SheetDate]:
@@ -298,40 +469,9 @@ class AccountingSpreadsheet:
         Gets list of SheetDate's
         """
         if self._dates is None:
-            dates_cells_gen = self._google.get_values(sheet_id=self.gid, from_='E1', to='ZZZ1')
-            dates: list[SheetDate] = []
-            wide = 1
-            flag = False
-            for c in list(dates_cells_gen):
-                if c.value is None and c.formatted_value is None:
-                    if flag:
-                        wide += 1
-                    continue
-                cell_date = c.formatted_value or c.value
-                try:
-                    date = datetime.datetime.strptime(cell_date, '%d.%m.%Y').date()
-                    sheet_date = SheetDate(date, c.col_idx, c.row_idx)
-                    if len(dates) > 0:  # set previous date wide
-                        dates[-1].wide = wide
-                    dates.append(sheet_date)
-                    flag = True
-                    wide = 1
-                except ValueError:
-                    flag = False  # switch flag to false to forbid increasing wide
-            # calculating last date wide
-            from_cell = Cell(col_idx=dates[-1].col_idx, row_idx=1)
-            to_cell = Cell(col_idx=dates[-1].col_idx + wide, row_idx=1)
-            cols_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
-            wide = 1
-            for c in cols_gen:
-                if c.col_idx == dates[-1].col_idx:
-                    continue
-                val = c.formatted_value or c.value
-                if val is None:
-                    break
-                wide += 1
-            dates[-1].wide = wide
+            dates, months = self._find_dates_with_months()
             self._dates = dates
+            self._months = months
         return self._dates
 
     def create_date(self, date: datetime.date | None = None) -> SheetDate:
@@ -344,6 +484,10 @@ class AccountingSpreadsheet:
         if index is None:  # check there is no already created date
             index = self._insert_date(date)
             self.update_date(date)
+            try:
+                self.update_month(date.month)
+            except ValueError:
+                self.summarize_month(date.month)
             try:
                 self.update_date(self.dates[index+1].date)
             except IndexError:
@@ -369,7 +513,7 @@ class AccountingSpreadsheet:
 
         new_shipments: list[Cell] = []
         for data in plus.values():
-            shipment: Income = data['shipment']
+            shipment: Shipment = data['shipment']
             row_idx: RowIdx = data['row_idx']
             try:
                 old_shipment: Cell = old_shipments[row_idx]
@@ -385,6 +529,8 @@ class AccountingSpreadsheet:
                 else:
                     old_value = float(old_value)
             new_value = shipment.weight + old_value
+            if isinstance(new_value, float):
+                new_value = round(new_value, 3)
             new_cell = Cell(value=new_value, col_idx=shipment_col_idx, row_idx=row_idx)
             new_shipments.append(new_cell)
         self._google.update_cells(new_shipments, self.gid)
@@ -393,10 +539,6 @@ class AccountingSpreadsheet:
         """
         Create new income and update google spreadsheet
         """
-        is_need_summarize = False
-        if self.dates[-1].date.month != date.month:
-            is_need_summarize = True
-
         sheet_date = self.create_date(date)
         income_col_idx = self._find_cols_indexes('Приход', target=sheet_date)[0]
         plus = {i.plu: {'income': i, 'row_idx': -1} for i in incomes}
@@ -430,40 +572,100 @@ class AccountingSpreadsheet:
                         old_value = old_value.replace(',', '.')
                     old_value = float(old_value)
             new_value = income.weight + old_value
+            if isinstance(new_value, float):
+                new_value = round(new_value, 3)
             new_cell = Cell(value=new_value, col_idx=income_col_idx, row_idx=row_idx)
             new_incomes.append(new_cell)
         self._google.update_cells(new_incomes, self.gid)
 
-        # summarize prev month
-        if is_need_summarize:
-            self.summarize_month(self.dates[-2].date.month)
 
     def create_sale(self, sales: list[Sale], date: datetime.date | None = None):
         """
         Create new sale and update google spreadsheet
         """
-        is_need_summarize = False
-        if self.dates[-1].date.month != date.month:
-            is_need_summarize = True
 
         sheet_date = self.create_date(date)
-        sale_col_idx, sale_sum_col_idx = self._find_cols_indexes('Реализация', 'Реализация сумма', target=sheet_date)
+        (
+            sale_col_idx,
+            sale_sum_col_idx,
+            main_dom_col_idx,
+            kino_col_idx,
+            blago_col_idx,
+            util_col_idx,
+        ) = self._find_cols_indexes(
+            'Реализация',
+            'Реализация сумма',
+            'Гл. Дом',
+            'Кинологи',
+            'Благотворительность',
+            'Утилизация',
+            target=sheet_date
+        )
         plus = {s.plu: {'sale': s, 'row_idx': -1} for s in sales}
         for p in self.products:
             if p.plu in plus:
                 plus[p.plu]['row_idx'] = p.row_idx
 
-        from_cell = Cell(col_idx=sale_col_idx, row_idx=min(v['row_idx'] for v in plus.values() if v['row_idx'] != -1))
-        to_cell = Cell(col_idx=sale_col_idx, row_idx=max(v['row_idx'] for v in plus.values() if v['row_idx'] != -1))
+        cols = [sale_col_idx, sale_sum_col_idx, main_dom_col_idx, kino_col_idx, blago_col_idx, util_col_idx]
+        from_cell = Cell(
+            col_idx=min(col_idx for col_idx in cols if col_idx is not None),
+            row_idx=min(v['row_idx'] for v in plus.values() if v['row_idx'] != -1)
+        )
+        to_cell = Cell(
+            col_idx=max(col_idx for col_idx in cols if col_idx is not None),
+            row_idx=max(v['row_idx'] for v in plus.values() if v['row_idx'] != -1)
+        )
 
-        old_sales_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
-        old_sales = {c.row_idx: c for c in old_sales_gen}
+        old_cells_gen = self._google.get_values(sheet_id=self.gid, from_=from_cell, to=to_cell)
+        old_sales: dict[RowIdx, Cell] = {}
+        other_cells: dict[RowIdx, list[Cell]] = {}
+        for c in old_cells_gen:
+            if c.col_idx == sale_col_idx:
+                old_sales[c.row_idx] = c
+                continue
+            if c.row_idx not in other_cells:
+                other_cells[c.row_idx] = []
+            other_cells[c.row_idx].append(c)
 
         new_sales: list[Cell] = []
         for data in plus.values():
             sale: Sale = data['sale']
             row_idx: RowIdx = data['row_idx']
             customers: dict[str, int | float] = {}
+            if sale.customer in ('Гл. Дом', 'Кинологи', 'Благотворительность', 'Утилизация'):
+                target_idx: int = -1
+                match sale.customer:
+                    case 'Гл. Дом':
+                        target_idx = main_dom_col_idx
+                    case 'Кинологи':
+                        target_idx = kino_col_idx
+                    case 'Благотворительность':
+                        target_idx = blago_col_idx
+                    case 'Утилизация':
+                        target_idx = util_col_idx
+                if target_idx is None:
+                    raise ValueError(f'No such column "{sale.customer}"')
+                cols = other_cells[row_idx]
+                old_value = 0
+                for c in cols:
+                    if c.col_idx == target_idx:
+                        value = c.formatted_value or c.value
+                        if value is None:
+                            old_value = 0
+                        elif isinstance(value, str) and value.isdigit():
+                            old_value = int(value)
+                        elif isinstance(value, str):
+                            value = value.replace(',', '.') if ',' in value else value
+                            old_value = float(value)
+                        else:
+                            old_value = value
+                        break
+                new_value = old_value + sale.weight
+                if isinstance(new_value, float):
+                    new_value = round(new_value, 3)
+                new_cell = Cell(value=new_value, row_idx=row_idx, col_idx=target_idx)
+                new_sales.append(new_cell)
+                continue
             try:
                 old_sale: Cell = old_sales[row_idx]
                 note = old_sale.note
@@ -491,7 +693,12 @@ class AccountingSpreadsheet:
                 customers[sale.customer] += sale.weight
             else:
                 customers[sale.customer] = sale.weight
+            if isinstance(customers[sale.customer], float):
+                customers[sale.customer] = round(customers[sale.customer], 3)
+
             new_value = sale.weight + old_value
+            if isinstance(new_value, float):
+                new_value = round(new_value, 3)
             new_note = '\n'.join(f'{customer} - {weight}' for customer, weight in customers.items())
             new_cell = Cell(value=new_value, note=new_note, col_idx=sale_col_idx, row_idx=row_idx)
             price_cell = Cell(col_idx=2, row_idx=row_idx)
@@ -502,36 +709,116 @@ class AccountingSpreadsheet:
             new_sales.append(new_cell_sum)
         self._google.update_cells(new_sales, self.gid)
 
-        # summarize prev month
-        if is_need_summarize:
-            self.summarize_month(self.dates[-2].date.month)
+    def update_month(self, month: int | Literal['last_date']):
+        if month == 'last_date':
+            month = self.dates[-1].date.month
+        int_months = [m.month for m in self.months]
+        index = int_months.index(month) # noqa
+        sheet_month = self.months[index]
 
-    def summarize_month(self, month: int):
         needed_dates = [sd for sd in self.dates if sd.date.month == month]
-        shipment_cols, income_cols, sale_cols, sale_sum_cols = [], [], [], []
+        (
+            shipment_cols,
+            income_cols,
+            sale_cols,
+            sale_sum_cols,
+            main_dom_cols,
+            kino_cols,
+            blago_cols,
+            util_cols
+         ) = [], [], [], [], [], [], [], []
         for sd in needed_dates:
-            shipment_col_idx, income_col_idx, sale_col_idx, sale_sum_col_idx = self._find_cols_indexes(
-                'Отгрузка', 'Приход', 'Реализация', 'Реализация сумма', target=sd
+            (
+                shipment_col_idx,
+                income_col_idx,
+                sale_col_idx,
+                sale_sum_col_idx,
+                main_dom_col_idx,
+                kino_col_idx,
+                blago_col_idx,
+                util_col_idx,
+            ) = self._find_cols_indexes(  # noqa
+                'Отгрузка',
+                'Приход',
+                'Реализация',
+                'Реализация сумма',
+                'Гл. Дом',
+                'Кинологи',
+                'Благотворительность',
+                'Утилизация',
+                target=sd
             )
             shipment_cols.append(shipment_col_idx)
             income_cols.append(income_col_idx)
             sale_cols.append(sale_col_idx)
             sale_sum_cols.append(sale_sum_col_idx)
+            main_dom_cols.append(main_dom_col_idx)
+            kino_cols.append(kino_col_idx)
+            blago_cols.append(blago_col_idx)
+            util_cols.append(util_col_idx)
+
+        new_cells = []
+        for p in self.products:
+            shipment_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in shipment_cols if col_idx is not None)
+            income_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in income_cols if col_idx is not None)
+            sale_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_cols if col_idx is not None)
+            sale_sum_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_sum_cols if col_idx is not None)
+            main_dom_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in main_dom_cols if col_idx is not None)
+            kino_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in kino_cols if col_idx is not None)
+            blago_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in blago_cols if col_idx is not None)
+            util_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in util_cols if col_idx is not None)
+
+            shipment_formula = None if shipment_formula == '=' else shipment_formula
+            income_formula = None if income_formula == '=' else income_formula
+            sale_formula = None if sale_formula == '=' else sale_formula
+            sale_sum_formula = None if sale_sum_formula == '=' else sale_sum_formula
+            main_dom_formula = None if main_dom_formula == '=' else main_dom_formula
+            kino_formula = None if kino_formula == '=' else kino_formula
+            blago_formula = None if blago_formula == '=' else blago_formula
+            util_formula = None if util_formula == '=' else util_formula
+
+            shipment_cell = Cell(value=shipment_formula, col_idx=sheet_month.col_idx, row_idx=p.row_idx)
+            income_cell = Cell(value=income_formula, col_idx=sheet_month.col_idx + 1, row_idx=p.row_idx)
+            sale_cell = Cell(value=sale_formula, col_idx=sheet_month.col_idx + 2, row_idx=p.row_idx)
+            sale_sum_cell = Cell(value=sale_sum_formula, col_idx=sheet_month.col_idx + 3, row_idx=p.row_idx)
+            main_dom_cell = Cell(value=main_dom_formula, col_idx=sheet_month.col_idx + 4, row_idx=p.row_idx)
+            kino_cell = Cell(value=kino_formula, col_idx=sheet_month.col_idx + 5, row_idx=p.row_idx)
+            blago_cell = Cell(value=blago_formula, col_idx=sheet_month.col_idx + 6, row_idx=p.row_idx)
+            util_cell = Cell(value=util_formula, col_idx=sheet_month.col_idx + 7, row_idx=p.row_idx)
+
+            new_cells.extend(
+                [shipment_cell, income_cell, sale_cell, sale_sum_cell, main_dom_cell, kino_cell, blago_cell, util_cell]
+            )
+        self._google.update_cells(new_cells, self.gid)
+
+    def summarize_month(self, month: int | Literal['last_date'], update_exist: bool = False):
+        if month == 'last_date':
+            month = self.dates[-1].date.month
+
+        int_months = [m.month for m in self.months]
+        if month in int_months:
+            if update_exist is True:
+                self.update_month(month)
+            return
+
+        # calculating last needed date
+        last_sheet_date = None
+        for sd in self.dates:
+            if month < sd.date.month:
+                break
+            if sd.date.month == month:
+                last_sheet_date = sd
 
         _, row_count = self._google.get_size_of_sheet(self.gid)
-        last_sheet_date = needed_dates[-1]
         insert_range = lambda: self._google.insert_range( # noqa
             from_cell=Cell(col_idx=last_sheet_date.col_idx + last_sheet_date.wide, row_idx=0),
             to_cell=Cell(col_idx=last_sheet_date.col_idx + last_sheet_date.wide + 3, row_idx=row_count),
             shift_dimension='COLUMNS',
             sheet_id=self.gid
         )
-        try:
-            insert_range()
-        except Exception:
-            self._google.append_dimension('COLUMNS', self.gid, 4)
-            insert_range()
-        index = self.dates.index(needed_dates[-1])
+        self._google.append_dimension('COLUMNS', self.gid, 8)
+        insert_range()
+        index = self.dates.index(last_sheet_date)
         for i in range(index + 1, len(self.dates)):
             self.dates[i].col_idx += 4
         from_cell = Cell(
@@ -543,40 +830,45 @@ class AccountingSpreadsheet:
         new_cells = [
             from_cell,
             Cell(value='Отгрузка', col_idx=from_cell.col_idx, row_idx=1), # noqa
-            Cell(value='Приход', col_idx=from_cell.col_idx + 1, row_idx=1), # noqa
-            Cell(value='Реализация', col_idx=from_cell.col_idx + 2, row_idx=1), # noqa
-            Cell(value='Реализация сумма', col_idx=from_cell.col_idx + 3, row_idx=1,
-                 borders=Borders(right=RightBorder('SOLID', 1))), # noqa
+            Cell(value='Приход', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Реализация', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Реализация сумма', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Гл. Дом', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Кинологи', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Благотворительность', col_idx=from_cell.col_idx, row_idx=1), # noqa
+            Cell(value='Утилизация', col_idx=from_cell.col_idx, row_idx=1), # noqa
         ]
-
-        for p in self.products:
-            shipment_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in shipment_cols if col_idx is not None) # noqa
-            income_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in income_cols if col_idx is not None) # noqa
-            sale_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_cols if col_idx is not None) # noqa
-            sale_sum_formula = '=' + ' + '.join(Cell(col_idx=col_idx, row_idx=p.row_idx).name for col_idx in sale_sum_cols if col_idx is not None) # noqa
-
-            shipment_cell = Cell(value=shipment_formula, col_idx=from_cell.col_idx, row_idx=p.row_idx) # noqa
-            income_cell = Cell(value=income_formula, col_idx=from_cell.col_idx + 1, row_idx=p.row_idx)
-            sale_cell = Cell(value=sale_formula, col_idx=from_cell.col_idx + 2, row_idx=p.row_idx)
-            sale_sum_cell = Cell(value=sale_sum_formula, col_idx=from_cell.col_idx + 3, row_idx=p.row_idx,
-                                 borders=Borders(right=RightBorder('SOLID', 1)))
-
-            new_cells.append(shipment_cell)
-            new_cells.append(income_cell)
-            new_cells.append(sale_cell)
-            new_cells.append(sale_sum_cell)
-
         self._google.update_cells(new_cells, self.gid)
-
+        sheet_month = SheetMonth(
+            name=SEASONS[month-1],
+            col_idx=last_sheet_date.col_idx + last_sheet_date.wide,
+            row_idx=0,
+            month=month, # noqa
+            wide=8,
+            cols=[
+                UnderDateColumn(name='Отгрузка', col_idx=from_cell.col_idx, row_idx=1),
+                UnderDateColumn(name='Приход', col_idx=from_cell.col_idx + 1, row_idx=1),
+                UnderDateColumn(name='Реализация', col_idx=from_cell.col_idx + 2, row_idx=1),
+                UnderDateColumn(name='Реализация сумма', col_idx=from_cell.col_idx + 3, row_idx=1),
+                UnderDateColumn(name='Гл. Дом', col_idx=from_cell.col_idx + 4, row_idx=1),
+                UnderDateColumn(name='Кинологи', col_idx=from_cell.col_idx + 5, row_idx=1),
+                UnderDateColumn(name='Благотворительность', col_idx=from_cell.col_idx + 6, row_idx=1),
+                UnderDateColumn(name='Утилизация', col_idx=from_cell.col_idx + 7, row_idx=1),
+            ]
+        )
+        self.months.insert(month-1, sheet_month)
+        for sd in self.dates:
+            if month < sd.date.month:
+                sd.add_col_idx(8)
+        for sm in self.months:
+            if month < sm.month:
+                sm.add_col_idx(8)
+        self.update_month(month)
 
     def do_inventory(self, inventories: list[Inventory], date: datetime.date | None = None):
         """
         Do inverntory
         """
-        is_need_summarize = False
-        if self.dates[-1].date.month != date.month:
-            is_need_summarize = True
-
         sheet_date = self.create_date(date)
         inventory_col_idx = self._find_cols_indexes('Инвентаризация', target=sheet_date)[0]
         if inventory_col_idx is None:
@@ -600,7 +892,7 @@ class AccountingSpreadsheet:
 
         new_inventories: list[Cell] = []
         for data in plus.values():
-            income: Income = data['inventory']
+            income: Inventory = data['inventory']
             row_idx: RowIdx = data['row_idx']
             try:
                 old_inventory: Cell = old_inventories[row_idx]
@@ -614,12 +906,11 @@ class AccountingSpreadsheet:
                 if old_value.isdigit():
                     old_value = int(old_value)
                 else:
+                    old_value = old_value.replace(',', '.') if ',' in old_value else old_value
                     old_value = float(old_value)
             new_value = income.weight + old_value
+            if isinstance(new_value, float):
+                new_value = round(new_value, 3)
             new_cell = Cell(value=new_value, col_idx=inventory_col_idx, row_idx=row_idx)
             new_inventories.append(new_cell)
         self._google.update_cells(new_inventories, self.gid)
-
-        # summarize prev month
-        if is_need_summarize:
-            self.summarize_month(self.dates[-2].date.month)

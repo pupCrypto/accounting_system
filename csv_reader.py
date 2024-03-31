@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import shutil
 import logging
@@ -84,14 +85,19 @@ def main(
                 elif operation == 'inventory':
                     g.do_inventory(params, f['date'] - datetime.timedelta(days=1))
             except Exception as e:
-                logger.error(f'Error was occurred. Error type: {type(e)}. Error content: {str(e)}')
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                logger.error(f'Error was occurred. Error type: {type(e)}.\n'
+                             f'Error content: {str(e)}\n'
+                             f'Error line: {exc_tb.tb_lineno}\n'
+                             f'Error file: {fname}')
 
             shutil.move(source, dest)
             logger.info(f'File {source} was moved to {dest}')
         del g
         if len(files_with_date) > 0:
-            logger.info('All files was handled')
+            logger.info('All files were handled')
         else:
-            logger.info(f'No files was found in "{from_csvs}" folder')
+            logger.info(f'No files were found in "{from_csvs}" folder')
         logger.info('Sleep for 1 hours')
         time.sleep(3600)
