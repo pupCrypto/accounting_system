@@ -584,7 +584,6 @@ class AccountingSpreadsheet:
         """
         Create new sale and update google spreadsheet
         """
-
         sheet_date = self.create_date(date)
         (
             sale_col_idx,
