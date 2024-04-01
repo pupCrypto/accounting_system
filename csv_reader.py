@@ -95,6 +95,15 @@ def main(
                              f'Error content: {str(e)}\n'
                              f'Error line: {exc_tb.tb_lineno}\n'
                              f'Error file: {fname}')
+
+                # save problem csv
+                if not os.path.exists('./error_csvs'):
+                    os.mkdir('./error_csvs')
+                error_csv_path = Path('./error_csvs') / file_name
+                if not os.path.exists(error_csv_path):
+                    shutil.copyfile(source, error_csv_path)
+
+                # send message about problem csv
                 if telegram_bot_token is not None and chat_id is not None:
                     try:
                         bot = telebot.TeleBot(telegram_bot_token)
@@ -106,13 +115,6 @@ def main(
                         logger.error(f'Error was with telegram bot.\n'
                                      f'Error type: {type(e)}\n'
                                      f'Error content: {str(e)}')
-                else:
-                    if not os.path.exists('./error_csvs'):
-                        os.mkdir('./error_csvs')
-                    error_csv_path = Path('./error_csvs') / file_name
-                    if not os.path.exists(error_csv_path):
-                        shutil.copyfile(source, error_csv_path)
-
         del g
         if len(files_with_date) > 0:
             logger.info('All files were handled')
